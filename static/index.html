@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SunNova AI Sales Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  #chat { height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+  .msg { max-width: 80%; padding: 9px 12px; border-radius: 12px; line-height: 1.4; font-size: 14px; }
+  .agent { background: #fef3c7; align-self: flex-start; }
+  .caller { background: #dbeafe; align-self: flex-end; }
+  .sys { align-self: center; color: var(--muted); font-size: 12px; }
+  #mic { width: 64px; height: 64px; border-radius: 50%; font-size: 26px; padding: 0; }
+  #mic.listening { background: var(--hot); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  .row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .row input { flex: 1; }
+  #status { font-size: 13px; color: var(--muted); min-height: 18px; }
+  .lead-grid { display: grid; grid-template-columns: 90px 1fr; gap: 4px 8px; font-size: 14px; }
+  .lead-grid b { color: var(--muted); font-weight: 600; }
+  #tools { font-family: Consolas, monospace; font-size: 12px; max-height: 190px; overflow-y: auto; }
+  #tools div { border-bottom: 1px dashed var(--line); padding: 4px 0; }
+  .side { display: flex; flex-direction: column; gap: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>☀ <span>SunNova</span> AI Sales Voice Agent</h1>
+  <span class="badge" id="mode">mode: -</span>
+  <a href="/dashboard" target="_blank">Open Dashboard →</a>
+</header>
+
+<main class="layout">
+  <!-- LEFT: the call -->
+  <section class="card">
+    <div class="controls">
+      <label>Language
+        <select id="lang">
+          <option value="en">English</option>
+          <option value="hi">हिन्दी (Hindi)</option>
+        </select>
+      </label>
+      <label>Voice speed <input id="rate" type="range" min="0.7" max="1.4" step="0.1" value="1"></label>
+      <label><input id="auto" type="checkbox" checked> Hands-free</label>
+      <button id="startBtn">📞 Start call</button>
+      <button id="endBtn" class="danger" disabled>End call</button>
+    </div>
+
+    <div id="chat"><div class="msg sys">Press "Start call". Allow microphone access when the browser asks.</div></div>
+
+    <div class="row">
+      <button id="mic" title="Click to talk" disabled>🎤</button>
+      <div style="flex:1">
+        <div id="status">Not in a call</div>
+        <!-- Text fallback: works even if the microphone fails -->
+        <div class="row" style="margin-top:4px">
+          <input id="textIn" type="text" placeholder="Or type here (text fallback) and press Enter" disabled>
+          <button id="sendBtn" disabled>Send</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RIGHT: live CRM card + agent activity + summary -->
+  <aside class="side">
+    <div class="card">
+      <h3>Live lead card (CRM)</h3>
+      <div class="lead-grid" id="lead"><span class="muted">No call yet</span></div>
+    </div>
+    <div class="card">
+      <h3>Agent activity (tool calls)</h3>
+      <div id="tools" class="muted">Tools the agent uses will appear here.</div>
+    </div>
+    <div class="card" id="summaryCard" style="display:none">
+      <h3>Call summary & insights</h3>
+      <div id="summary"></div>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+// ================= CONFIG (easy to change live) =================
+const LANGS = {
+  en: { speech: "en-IN", label: "English" },   // BCP-47 codes for speech recognition / TTS
+  hi: { speech: "hi-IN", label: "Hindi" },
+};
+
+// ================= STATE =================
+let callId = null;        // current call id from the server
+let recognizer = null;    // browser speech-to-text object
+let listening = false;
+let pendingEnd = false;   // agent said goodbye -> hang up once it finishes speaking
+const $ = (id) => document.getElementById(id);
+
+// ================= Talking to our FastAPI backend =================
+async function api(path, body) {
+  try {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(body || {}) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+    return data;
+  } catch (err) {
+    toast("Problem: " + err.message);
+    return null;
+  }
+}
+
+// ================= Call lifecycle =================
+async function startCall() {
+  const data = await api("/api/call/start", { language: $("lang").value });
+  if (!data) return;
+  callId = data.call_id;
+  pendingEnd = false;
+  $("chat").innerHTML = "";
+  $("tools").innerHTML = "";
+  $("summaryCard").style.display = "none";
+  setMode(data.mode);
+  setInCall(true);
+  addMsg("agent", data.reply);
+  speak(data.reply);
+}
+
+async function sendText(text) {
+  if (!callId) return;
+  text = (text || "").trim();
+  if (text) addMsg("caller", text);
+  $("status").textContent = "Agent is thinking…";
+  const data = await api(`/api/call/${callId}/message`, { text, language: $("lang").value });
+  if (!data) { $("status").textContent = "Try again"; return; }
+  setMode(data.mode);
+  data.events.forEach(showTool);
+  showLead(data.lead);
+  addMsg("agent", data.reply);
+  if (data.end_call) {                  // caller confirmed -> goodbye, then hang up automatically
+    pendingEnd = true;
+    stopListening();
+    // safety net in case the browser never fires "speech ended"
+    setTimeout(() => { if (pendingEnd && callId) { pendingEnd = false; endCall(); } }, 4000 + data.reply.length * 90);
+  }
+  speak(data.reply);
+}
+
+async function endCall() {
+  if (!callId) return;
+  stopListening();
+  speechSynthesis.cancel();
+  $("status").textContent = "Generating summary…";
+  const data = await api(`/api/call/${callId}/end`);
+  callId = null;
+  setInCall(false);
+  if (!data) return;
+  showLead(data.lead);
+  $("summaryCard").style.display = "block";
+  $("summary").innerHTML = `<p>${esc(data.summary)}</p><ul>${data.insights.map(i => `<li>${esc(i)}</li>`).join("")}</ul>
+    <p class="muted">Saved to CRM. See the <a href="/dashboard" target="_blank">dashboard</a>.</p>`;
+  addMsg("sys", "📴 Call ended and saved to CRM.");
+}
+
+// ================= Speech-to-text (browser Web Speech API) =================
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function startListening() {
+  if (!SpeechRec) { toast("Voice input not supported in this browser. Use Chrome, or type below."); return; }
+  if (listening || !callId) return;
+  speechSynthesis.cancel();                       // "barge-in": stop the agent if the caller talks
+  recognizer = new SpeechRec();
+  recognizer.lang = LANGS[$("lang").value].speech;
+  recognizer.interimResults = true;               // show words while the caller is still speaking
+  let finalText = "";
+  recognizer.onresult = (e) => {
+    let interim = "";
+    for (const r of e.results) (r.isFinal ? (finalText = r[0].transcript) : (interim += r[0].transcript));
+    $("status").textContent = "Hearing: " + (finalText || interim);
+  };
+  recognizer.onerror = (e) => {
+    if (e.error === "no-speech") $("status").textContent = "Didn't hear anything. Click 🎤 and speak.";
+    else if (e.error === "not-allowed") toast("Microphone blocked. Allow mic access or use the text box.");
+    else toast("Speech error: " + e.error + ". You can type instead.");
+  };
+  recognizer.onend = () => {
+    listening = false;
+    $("mic").classList.remove("listening");
+    if (finalText) sendText(finalText);           // caller finished a sentence -> send it
+  };
+  recognizer.start();
+  listening = true;
+  $("mic").classList.add("listening");
+  $("status").textContent = "Listening… speak now";
+}
+
+function stopListening() {
+  if (recognizer && listening) recognizer.stop();
+}
+
+// ================= Text-to-speech (browser speechSynthesis) =================
+function speak(text) {
+  if (!("speechSynthesis" in window)) { if (pendingEnd) { pendingEnd = false; endCall(); } return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = LANGS[$("lang").value].speech;
+  u.rate = parseFloat($("rate").value);           // voice speed slider
+  const voice = pickVoice(u.lang);
+  if (voice) u.voice = voice;
+  u.onend = () => {                               // hands-free: listen again after speaking
+    if (pendingEnd) { pendingEnd = false; endCall(); return; }   // goodbye finished -> hang up
+    $("status").textContent = callId ? "Your turn" : "Not in a call";
+    if (callId && $("auto").checked) startListening();
+  };
+  $("status").textContent = "Agent speaking…";
+  speechSynthesis.speak(u);
+}
+
+function pickVoice(langCode) {
+  const voices = speechSynthesis.getVoices();
+  const prefix = langCode.split("-")[0];
+  // Prefer a female Google/Microsoft voice for the exact locale, then any voice of that language
+  return voices.find(v => v.lang === langCode && /female|google|heera|swara|kalpana/i.test(v.name))
+      || voices.find(v => v.lang === langCode)
+      || voices.find(v => v.lang.startsWith(prefix));
+}
+speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();   // Chrome loads voices late
+
+// ================= UI helpers =================
+function addMsg(who, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + who;
+  div.textContent = text;
+  $("chat").appendChild(div);
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+
+function showTool(ev) {
+  const div = document.createElement("div");
+  const short = JSON.stringify(ev.result).slice(0, 140);
+  div.textContent = `🔧 ${ev.tool}(${JSON.stringify(ev.args)}) → ${short}`;
+  $("tools").prepend(div);
+}
+
+function showLead(l) {
+  if (!l) return;
+  const row = (k, v) => `<b>${k}</b><span>${v || '<span class="muted">—</span>'}</span>`;
+  $("lead").innerHTML =
+    row("Lead #", l.id) + row("Name", esc(l.name)) + row("City", esc(l.city)) + row("Need", esc(l.need)) +
+    row("Budget", esc(l.budget)) + row("Timeline", esc(l.timeline)) +
+    row("Score", `<span class="badge ${l.score}">${l.score.toUpperCase()}</span>`) +
+    row("Sentiment", `<span class="badge ${l.sentiment}">${l.sentiment}</span>`) +
+    row("Status", l.status) + (l.do_not_call ? row("DNC", "🚫 Do not call") : "");
+}
+
+function setInCall(on) {
+  $("startBtn").disabled = on;
+  $("endBtn").disabled = !on;
+  $("mic").disabled = !on;
+  $("textIn").disabled = !on;
+  $("sendBtn").disabled = !on;
+  $("status").textContent = on ? "In call" : "Not in a call";
+}
+
+function setMode(mode) {
+  $("mode").textContent = "brain: " + mode;
+  $("mode").style.background = mode.startsWith("openai") ? "#16a34a" : "#b45309";
+}
+
+function toast(msg) {
+  $("toast").textContent = msg;
+  $("toast").style.display = "block";
+  clearTimeout(window._t);
+  window._t = setTimeout(() => ($("toast").style.display = "none"), 4000);
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ================= Wire up buttons =================
+$("startBtn").onclick = startCall;
+$("endBtn").onclick = endCall;
+$("mic").onclick = () => (listening ? stopListening() : startListening());
+$("sendBtn").onclick = () => { sendText($("textIn").value); $("textIn").value = ""; };
+$("textIn").onkeydown = (e) => { if (e.key === "Enter") $("sendBtn").onclick(); };
+if (!SpeechRec) addMsg("sys", "Voice input not supported in this browser (use Chrome/Edge). Text box works.");
+</script>
+</body>
+</html>

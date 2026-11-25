@@ -1,0 +1,30 @@
+/* style.css - shared look for the call screen and the dashboard */
+:root {
+  --bg: #f4f6f8; --card: #ffffff; --text: #1d2733; --muted: #66727f; --line: #e2e6ea;
+  --brand: #f59e0b; --brand-dark: #b45309; --blue: #2563eb;
+  --hot: #dc2626; --warm: #f59e0b; --cold: #3b82f6;
+  --pos: #16a34a; --neu: #64748b; --neg: #dc2626;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+header { background: #111827; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; }
+header h1 span { color: var(--brand); }
+header a { color: #fbbf24; margin-left: auto; text-decoration: none; font-weight: 600; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #fff; background: var(--neu); display: inline-block; }
+.hot { background: var(--hot); } .warm { background: var(--warm); } .cold { background: var(--cold); }
+.positive { background: var(--pos); } .neutral { background: var(--neu); } .negative { background: var(--neg); }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.card h3 { margin: 0 0 10px; font-size: 15px; }
+button { border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 600; cursor: pointer; background: var(--blue); color: #fff; font-size: 14px; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.secondary { background: #e5e7eb; color: var(--text); }
+button.danger { background: var(--hot); }
+select, input[type=text] { padding: 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); font-size: 13px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff;
+         padding: 10px 16px; border-radius: 8px; display: none; z-index: 10; max-width: 90%; }

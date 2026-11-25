@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SunNova Sales Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat .num { font-size: 30px; font-weight: 700; }
+  .stat .lbl { color: var(--muted); font-size: 13px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .bar-row .name { width: 70px; }
+  .bar-row .track { flex: 1; background: #eef1f4; border-radius: 6px; height: 18px; overflow: hidden; }
+  .bar-row .fill { height: 100%; border-radius: 6px; }
+  .bar-row .val { width: 26px; text-align: right; font-weight: 600; }
+  .call { border-bottom: 1px solid var(--line); padding: 10px 0; }
+  .call ul { margin: 6px 0 0 18px; padding: 0; font-size: 13px; color: var(--muted); }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>☀ <span>SunNova</span> Sales Dashboard</h1>
+  <span class="muted" style="color:#9ca3af" id="updated"></span>
+  <a href="/">← Back to call screen</a>
+</header>
+
+<main>
+  <!-- KPI cards -->
+  <div class="stats" id="stats"></div>
+
+  <div class="grid2">
+    <div class="card"><h3>Lead score</h3><div id="scoreChart"></div></div>
+    <div class="card"><h3>Caller sentiment</h3><div id="sentChart"></div></div>
+  </div>
+
+  <div class="card scroll" style="margin-bottom:16px">
+    <h3>Leads (CRM)</h3>
+    <table>
+      <thead><tr><th>#</th><th>Name</th><th>City</th><th>Need</th><th>Budget</th><th>Timeline</th>
+        <th>Lang</th><th>Score</th><th>Sentiment</th><th>Status</th><th>DNC</th></tr></thead>
+      <tbody id="leads"></tbody>
+    </table>
+  </div>
+
+  <div class="grid2">
+    <div class="card scroll">
+      <h3>Booked site visits</h3>
+      <table><thead><tr><th>Slot</th><th>Lead</th><th>City</th></tr></thead><tbody id="appts"></tbody></table>
+    </div>
+    <div class="card">
+      <h3>Call summaries & insights</h3>
+      <div id="calls"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Draws a simple horizontal bar chart with plain HTML (no chart library needed)
+function bars(items) {
+  const max = Math.max(1, ...items.map(i => i.value));
+  return items.map(i => `<div class="bar-row"><span class="name">${i.label}</span>
+    <div class="track"><div class="fill" style="width:${100 * i.value / max}%;background:${i.color}"></div></div>
+    <span class="val">${i.value}</span></div>`).join("");
+}
+
+async function load() {
+  let d;
+  try { d = await (await fetch("/api/dashboard")).json(); }
+  catch { $("updated").textContent = "Server not reachable"; return; }
+  const s = d.stats;
+
+  // KPI cards
+  const kpis = [["Total calls", s.total_calls], ["Hot leads", s.hot_leads], ["Bookings", s.bookings],
+                ["Conversion", s.conversion + "%"], ["Total leads", d.leads.length]];
+  $("stats").innerHTML = kpis.map(([l, v]) => `<div class="card stat"><div class="num">${v}</div><div class="lbl">${l}</div></div>`).join("");
+
+  // Charts
+  $("scoreChart").innerHTML = bars([{ label: "Hot", value: s.hot_leads, color: "var(--hot)" },
+                                    { label: "Warm", value: s.warm_leads, color: "var(--warm)" },
+                                    { label: "Cold", value: s.cold_leads, color: "var(--cold)" }]);
+  const neutral = d.leads.length - s.positive - s.negative;
+  $("sentChart").innerHTML = bars([{ label: "Positive", value: s.positive, color: "var(--pos)" },
+                                   { label: "Neutral", value: neutral, color: "var(--neu)" },
+                                   { label: "Negative", value: s.negative, color: "var(--neg)" }]);
+
+  // Leads table
+  $("leads").innerHTML = d.leads.map(l => `<tr><td>${l.id}</td><td>${esc(l.name) || "—"}</td><td>${esc(l.city)}</td>
+    <td>${esc(l.need)}</td><td>${esc(l.budget)}</td><td>${esc(l.timeline)}</td><td>${l.language}</td>
+    <td><span class="badge ${l.score}">${l.score}</span></td><td><span class="badge ${l.sentiment}">${l.sentiment}</span></td>
+    <td>${l.status}</td><td>${l.do_not_call ? "🚫" : ""}</td></tr>`).join("");
+
+  // Appointments
+  $("appts").innerHTML = d.appointments.map(a => `<tr><td>${a.slot}</td><td>${esc(a.name) || "#" + a.lead_id}</td>
+    <td>${esc(a.city)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No bookings yet</td></tr>`;
+
+  // Call summaries
+  $("calls").innerHTML = d.calls.slice(0, 8).map(c => `<div class="call">
+    <b>${esc(c.name) || "Lead #" + c.lead_id}</b> <span class="badge ${c.score}">${c.score}</span>
+    <span class="badge ${c.sentiment}">${c.sentiment}</span> <span class="muted">${c.ended_at || ""}</span>
+    <div style="font-size:14px;margin-top:4px">${esc(c.summary)}</div>
+    <ul>${c.insights.map(i => `<li>${esc(i)}</li>`).join("")}</ul></div>`).join("") || `<p class="muted">No calls yet</p>`;
+
+  $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+}
+
+load();
+setInterval(load, 5000);   // auto-refresh every 5 seconds
+</script>
+</body>
+</html>
